@@ -68,4 +68,4 @@ def get_anonymous_query(uuid):
 # we can hit our API.  Could also be used for monitoring.
 @app.route('/ping', methods=['GET'], cors=True)
 def ping():
-    return {'ping': 10}
+    return {'ping': 11}
