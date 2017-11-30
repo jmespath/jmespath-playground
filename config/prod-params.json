@@ -1,0 +1,6 @@
+{
+  "Parameters" : {
+    "AppS3Bucket" : "prod-jp-play-bucket",
+    "AppS3Prefix" : "prod/"
+  }
+}

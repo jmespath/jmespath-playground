@@ -1,0 +1,816 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Outputs": {
+    "CFNDeployRoleArn": {
+      "Value": {
+        "Fn::GetAtt": [
+          "CFNDeployRole",
+          "Arn"
+        ]
+      }
+    },
+    "CodeBuildRoleArn": {
+      "Value": {
+        "Fn::GetAtt": [
+          "CodeBuildRole",
+          "Arn"
+        ]
+      }
+    },
+    "CodePipelineRoleArn": {
+      "Value": {
+        "Fn::GetAtt": [
+          "CodePipelineRole",
+          "Arn"
+        ]
+      }
+    },
+    "S3ApplicationBucket": {
+      "Value": {
+        "Ref": "ApplicationBucket"
+      }
+    },
+    "S3PipelineBucket": {
+      "Value": {
+        "Ref": "ArtifactBucketStore"
+      }
+    }
+  },
+  "Parameters": {
+    "ApplicationName": {
+      "Default": "jmespath-playground",
+      "Description": "Enter the name of your application.",
+      "Type": "String"
+    },
+    "CodeBuildImage": {
+      "Default": "python:3.6.1",
+      "Description": "Name of codebuild image to use.",
+      "Type": "String"
+    },
+    "GithubPersonalToken": {
+      "Description": "Personal access token for github repo access",
+      "Type": "String"
+    },
+    "ProdAccountId": {
+      "Description": "Account Id of Prod Account",
+      "Type": "String"
+    },
+    "ProdActionRoleArn": {
+      "Description": "Role ARN to use for codepipeline deploys to prod",
+      "Type": "String"
+    },
+    "ProdDeployRoleArn": {
+      "Description": "Role ARN to use for CFN deploys to prod",
+      "Type": "String"
+    },
+    "SNSEndpoint": {
+      "Description": "The endpoint value for the SNS subscription used for pipeline event notifications.  If the protocol type is \"email\" then this value is the email address.",
+      "Type": "String"
+    },
+    "SNSProtocol": {
+      "Description": "The protocol type for the SNS subscription used for pipeline event notifications (e.g \"email\")",
+      "Type": "String"
+    }
+  },
+  "Resources": {
+    "AllowCloudWatchEventsPublish": {
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "sns:Publish"
+              ],
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "events.amazonaws.com"
+              },
+              "Resource": [
+                {
+                  "Ref": "AppPipelineDeployments"
+                }
+              ],
+              "Sid": "AllowCloudWatchEventsToPublish"
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Topics": [
+          {
+            "Ref": "AppPipelineDeployments"
+          }
+        ]
+      },
+      "Type": "AWS::SNS::TopicPolicy"
+    },
+    "AppPackageBuild": {
+      "Properties": {
+        "Artifacts": {
+          "Type": "CODEPIPELINE"
+        },
+        "EncryptionKey": {
+          "Fn::GetAtt": [
+            "DeployKey",
+            "Arn"
+          ]
+        },
+        "Environment": {
+          "ComputeType": "BUILD_GENERAL1_SMALL",
+          "EnvironmentVariables": [
+            {
+              "Name": "APP_S3_BUCKET",
+              "Value": {
+                "Ref": "ApplicationBucket"
+              }
+            }
+          ],
+          "Image": {
+            "Ref": "CodeBuildImage"
+          },
+          "Type": "LINUX_CONTAINER"
+        },
+        "Name": {
+          "Fn::Sub": "${ApplicationName}-build"
+        },
+        "ServiceRole": {
+          "Fn::GetAtt": [
+            "CodeBuildRole",
+            "Arn"
+          ]
+        },
+        "Source": {
+          "Type": "CODEPIPELINE"
+        }
+      },
+      "Type": "AWS::CodeBuild::Project"
+    },
+    "AppPipeline": {
+      "Properties": {
+        "ArtifactStore": {
+          "EncryptionKey": {
+            "Id": {
+              "Ref": "DeployKey"
+            },
+            "Type": "KMS"
+          },
+          "Location": {
+            "Ref": "ArtifactBucketStore"
+          },
+          "Type": "S3"
+        },
+        "Name": {
+          "Fn::Sub": "${ApplicationName}-pipeline"
+        },
+        "RoleArn": {
+          "Fn::GetAtt": [
+            "CodePipelineRole",
+            "Arn"
+          ]
+        },
+        "Stages": [
+          {
+            "Actions": [
+              {
+                "ActionTypeId": {
+                  "Category": "Source",
+                  "Owner": "ThirdParty",
+                  "Provider": "GitHub",
+                  "Version": "1"
+                },
+                "Configuration": {
+                  "Branch": "master",
+                  "OAuthToken": {
+                    "Ref": "GithubPersonalToken"
+                  },
+                  "Owner": "jmespath",
+                  "PollForSourceChanges": true,
+                  "Repo": "jmespath-playground"
+                },
+                "Name": "Source",
+                "OutputArtifacts": [
+                  {
+                    "Name": "SourceRepo"
+                  }
+                ],
+                "RunOrder": 1
+              }
+            ],
+            "Name": "Source"
+          },
+          {
+            "Actions": [
+              {
+                "ActionTypeId": {
+                  "Category": "Build",
+                  "Owner": "AWS",
+                  "Provider": "CodeBuild",
+                  "Version": "1"
+                },
+                "Configuration": {
+                  "ProjectName": {
+                    "Ref": "AppPackageBuild"
+                  }
+                },
+                "InputArtifacts": [
+                  {
+                    "Name": "SourceRepo"
+                  }
+                ],
+                "Name": "CodeBuild",
+                "OutputArtifacts": [
+                  {
+                    "Name": "CompiledCFNTemplate"
+                  }
+                ],
+                "RunOrder": 1
+              }
+            ],
+            "Name": "Build"
+          },
+          {
+            "Actions": [
+              {
+                "ActionTypeId": {
+                  "Category": "Deploy",
+                  "Owner": "AWS",
+                  "Provider": "CloudFormation",
+                  "Version": "1"
+                },
+                "Configuration": {
+                  "ActionMode": "CHANGE_SET_REPLACE",
+                  "Capabilities": "CAPABILITY_IAM",
+                  "ChangeSetName": {
+                    "Fn::Sub": "${ApplicationName}-change-set"
+                  },
+                  "RoleArn": {
+                    "Fn::GetAtt": [
+                      "CFNDeployRole",
+                      "Arn"
+                    ]
+                  },
+                  "StackName": {
+                    "Fn::Sub": "${ApplicationName}-beta-stack"
+                  },
+                  "TemplateConfiguration": "CompiledCFNTemplate::dev-params.json",
+                  "TemplatePath": "CompiledCFNTemplate::transformed.yaml"
+                },
+                "InputArtifacts": [
+                  {
+                    "Name": "CompiledCFNTemplate"
+                  }
+                ],
+                "Name": "CreateBetaChangeSet",
+                "RunOrder": 1
+              },
+              {
+                "ActionTypeId": {
+                  "Category": "Deploy",
+                  "Owner": "AWS",
+                  "Provider": "CloudFormation",
+                  "Version": "1"
+                },
+                "Configuration": {
+                  "ActionMode": "CHANGE_SET_EXECUTE",
+                  "ChangeSetName": {
+                    "Fn::Sub": "${ApplicationName}-change-set"
+                  },
+                  "OutputFileName": "StackOutputs.json",
+                  "StackName": {
+                    "Fn::Sub": "${ApplicationName}-beta-stack"
+                  }
+                },
+                "Name": "ExecuteChangeSet",
+                "OutputArtifacts": [
+                  {
+                    "Name": "AppDeploymentValues"
+                  }
+                ],
+                "RunOrder": 2
+              }
+            ],
+            "Name": "Beta"
+          },
+          {
+            "Actions": [
+              {
+                "ActionTypeId": {
+                  "Category": "Approval",
+                  "Owner": "AWS",
+                  "Provider": "Manual",
+                  "Version": "1"
+                },
+                "Configuration": {
+                  "CustomData": "Approve to deploy to prod."
+                },
+                "InputArtifacts": [],
+                "Name": "ApproveProdDeploy",
+                "RunOrder": 1
+              }
+            ],
+            "Name": "ApproveProd"
+          },
+          {
+            "Actions": [
+              {
+                "ActionTypeId": {
+                  "Category": "Deploy",
+                  "Owner": "AWS",
+                  "Provider": "CloudFormation",
+                  "Version": "1"
+                },
+                "Configuration": {
+                  "ActionMode": "CHANGE_SET_REPLACE",
+                  "Capabilities": "CAPABILITY_IAM",
+                  "ChangeSetName": {
+                    "Fn::Sub": "${ApplicationName}-change-set-prod"
+                  },
+                  "RoleArn": {
+                    "Ref": "ProdDeployRoleArn"
+                  },
+                  "StackName": {
+                    "Fn::Sub": "${ApplicationName}-prod-stack"
+                  },
+                  "TemplateConfiguration": "CompiledCFNTemplate::prod-params.json",
+                  "TemplatePath": "CompiledCFNTemplate::transformed.yaml"
+                },
+                "InputArtifacts": [
+                  {
+                    "Name": "CompiledCFNTemplate"
+                  }
+                ],
+                "Name": "CreateProdChangeSet",
+                "RoleArn": {
+                  "Ref": "ProdActionRoleArn"
+                },
+                "RunOrder": 1
+              },
+              {
+                "ActionTypeId": {
+                  "Category": "Deploy",
+                  "Owner": "AWS",
+                  "Provider": "CloudFormation",
+                  "Version": "1"
+                },
+                "Configuration": {
+                  "ActionMode": "CHANGE_SET_EXECUTE",
+                  "ChangeSetName": {
+                    "Fn::Sub": "${ApplicationName}-change-set-prod"
+                  },
+                  "RoleArn": {
+                    "Ref": "ProdDeployRoleArn"
+                  },
+                  "StackName": {
+                    "Fn::Sub": "${ApplicationName}-prod-stack"
+                  }
+                },
+                "Name": "ExecuteChangeSet",
+                "RoleArn": {
+                  "Ref": "ProdActionRoleArn"
+                },
+                "RunOrder": 2
+              }
+            ],
+            "Name": "Prod"
+          }
+        ]
+      },
+      "Type": "AWS::CodePipeline::Pipeline"
+    },
+    "AppPipelineDeployments": {
+      "Properties": {
+        "DisplayName": "AppPipelineDeployments",
+        "Subscription": [
+          {
+            "Endpoint": {
+              "Ref": "SNSEndpoint"
+            },
+            "Protocol": {
+              "Ref": "SNSProtocol"
+            }
+          }
+        ]
+      },
+      "Type": "AWS::SNS::Topic"
+    },
+    "ApplicationBucket": {
+      "Type": "AWS::S3::Bucket"
+    },
+    "ApplicationBucketPolicy": {
+      "Properties": {
+        "Bucket": {
+          "Ref": "ApplicationBucket"
+        },
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "s3:*"
+              ],
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:aws:iam::",
+                      {
+                        "Ref": "ProdAccountId"
+                      },
+                      ":root"
+                    ]
+                  ]
+                }
+              },
+              "Resource": [
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:aws:s3:::",
+                      {
+                        "Ref": "ApplicationBucket"
+                      },
+                      "/*"
+                    ]
+                  ]
+                }
+              ]
+            }
+          ],
+          "Version": "2012-10-17"
+        }
+      },
+      "Type": "AWS::S3::BucketPolicy"
+    },
+    "ArtifactBucketStore": {
+      "Type": "AWS::S3::Bucket"
+    },
+    "ArtifactBucketStorePolicy": {
+      "Properties": {
+        "Bucket": {
+          "Ref": "ArtifactBucketStore"
+        },
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "s3:*"
+              ],
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:aws:iam::",
+                      {
+                        "Ref": "ProdAccountId"
+                      },
+                      ":root"
+                    ]
+                  ]
+                }
+              },
+              "Resource": [
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:aws:s3:::",
+                      {
+                        "Ref": "ArtifactBucketStore"
+                      },
+                      "/*"
+                    ]
+                  ]
+                }
+              ]
+            }
+          ],
+          "Version": "2012-10-17"
+        }
+      },
+      "Type": "AWS::S3::BucketPolicy"
+    },
+    "CFNDeployRole": {
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "sts:AssumeRole"
+              ],
+              "Effect": "Allow",
+              "Principal": {
+                "Service": [
+                  "cloudformation.amazonaws.com"
+                ]
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Policies": [
+          {
+            "PolicyDocument": {
+              "Statement": [
+                {
+                  "Action": [
+                    "*"
+                  ],
+                  "Effect": "Allow",
+                  "Resource": [
+                    "*"
+                  ]
+                }
+              ],
+              "Version": "2012-10-17"
+            },
+            "PolicyName": "DeployAccess"
+          }
+        ]
+      },
+      "Type": "AWS::IAM::Role"
+    },
+    "CodeBuildPolicy": {
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "logs:CreateLogGroup",
+                "logs:CreateLogStream",
+                "logs:PutLogEvents"
+              ],
+              "Effect": "Allow",
+              "Resource": [
+                "*"
+              ]
+            },
+            {
+              "Action": [
+                "s3:GetObject",
+                "s3:GetObjectVersion",
+                "s3:PutObject"
+              ],
+              "Effect": "Allow",
+              "Resource": [
+                "arn:aws:s3:::*"
+              ]
+            },
+            {
+              "Action": [
+                "kms:*"
+              ],
+              "Effect": "Allow",
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "DeployKey",
+                    "Arn"
+                  ]
+                }
+              ]
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "CodeBuildPolicy",
+        "Roles": [
+          {
+            "Ref": "CodeBuildRole"
+          }
+        ]
+      },
+      "Type": "AWS::IAM::Policy"
+    },
+    "CodeBuildRole": {
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "sts:AssumeRole"
+              ],
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "codebuild.amazonaws.com"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        }
+      },
+      "Type": "AWS::IAM::Role"
+    },
+    "CodePipelineRole": {
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "sts:AssumeRole"
+              ],
+              "Effect": "Allow",
+              "Principal": {
+                "Service": [
+                  "codepipeline.amazonaws.com"
+                ]
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "Policies": [
+          {
+            "PolicyDocument": {
+              "Statement": [
+                {
+                  "Action": [
+                    "s3:GetObject",
+                    "s3:GetObjectVersion",
+                    "s3:GetBucketVersioning",
+                    "s3:CreateBucket",
+                    "s3:PutObject",
+                    "s3:PutBucketVersioning"
+                  ],
+                  "Effect": "Allow",
+                  "Resource": [
+                    "*"
+                  ]
+                },
+                {
+                  "Action": [
+                    "cloudwatch:*",
+                    "iam:PassRole",
+                    "iam:ListRoles",
+                    "iam:GetRole",
+                    "sts:AssumeRole"
+                  ],
+                  "Effect": "Allow",
+                  "Resource": [
+                    "*"
+                  ]
+                },
+                {
+                  "Action": [
+                    "lambda:InvokeFunction",
+                    "lambda:ListFunctions"
+                  ],
+                  "Effect": "Allow",
+                  "Resource": [
+                    "*"
+                  ]
+                },
+                {
+                  "Action": [
+                    "cloudformation:CreateStack",
+                    "cloudformation:DeleteStack",
+                    "cloudformation:DescribeStacks",
+                    "cloudformation:UpdateStack",
+                    "cloudformation:CreateChangeSet",
+                    "cloudformation:DeleteChangeSet",
+                    "cloudformation:DescribeChangeSet",
+                    "cloudformation:ExecuteChangeSet",
+                    "cloudformation:SetStackPolicy",
+                    "cloudformation:ValidateTemplate",
+                    "iam:PassRole"
+                  ],
+                  "Effect": "Allow",
+                  "Resource": [
+                    "*"
+                  ]
+                },
+                {
+                  "Action": [
+                    "codebuild:BatchGetBuilds",
+                    "codebuild:StartBuild"
+                  ],
+                  "Effect": "Allow",
+                  "Resource": [
+                    "*"
+                  ]
+                },
+                {
+                  "Action": [
+                    "kms:*"
+                  ],
+                  "Effect": "Allow",
+                  "Resource": [
+                    {
+                      "Fn::GetAtt": [
+                        "DeployKey",
+                        "Arn"
+                      ]
+                    }
+                  ]
+                }
+              ],
+              "Version": "2012-10-17"
+            },
+            "PolicyName": "DefaultPolicy"
+          }
+        ]
+      },
+      "Type": "AWS::IAM::Role"
+    },
+    "DeployKey": {
+      "Properties": {
+        "KeyPolicy": {
+          "Id": "KeyPolicyId",
+          "Statement": [
+            {
+              "Action": [
+                "kms:*"
+              ],
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:aws:iam::",
+                      {
+                        "Ref": "AWS::AccountId"
+                      },
+                      ":root"
+                    ]
+                  ]
+                }
+              },
+              "Resource": [
+                "*"
+              ],
+              "Sid": "AdminAccess"
+            },
+            {
+              "Action": [
+                "kms:Encrypt",
+                "kms:Decrypt",
+                "kms:ReEncrypt*",
+                "kms:GenerateDataKey",
+                "kms:DescribeKey"
+              ],
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:aws:iam::",
+                      {
+                        "Ref": "ProdAccountId"
+                      },
+                      ":root"
+                    ]
+                  ]
+                }
+              },
+              "Resource": [
+                "*"
+              ],
+              "Sid": "KeyUsage"
+            }
+          ],
+          "Version": "2012-10-17"
+        }
+      },
+      "Type": "AWS::KMS::Key"
+    },
+    "PipelineEvents": {
+      "Properties": {
+        "Description": "CloudWatch Events Rule for app pipeline.",
+        "EventPattern": {
+          "detail": {
+            "pipeline": [
+              {
+                "Ref": "AppPipeline"
+              }
+            ],
+            "type": {
+              "category": [
+                "Deploy",
+                "Approval"
+              ]
+            }
+          },
+          "detail-type": [
+            "CodePipeline Action Execution State Change"
+          ],
+          "source": [
+            "aws.codepipeline"
+          ]
+        },
+        "Targets": [
+          {
+            "Arn": {
+              "Ref": "AppPipelineDeployments"
+            },
+            "Id": "1"
+          }
+        ]
+      },
+      "Type": "AWS::Events::Rule"
+    }
+  }
+}

@@ -1,0 +1,4 @@
+flake8==3.5.0
+pytest==3.2.3
+troposphere[policy]==2.1.0
+-r requirements.txt

@@ -1,0 +1,5 @@
+chalice==1.0.4
+boto3==1.4.7
+botocore==1.7.40
+marshmallow==2.14.0
+semidbm==0.5.1
